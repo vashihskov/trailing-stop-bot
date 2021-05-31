@@ -1,1 +1,1 @@
-# trailing-stop-bot
+Trailing-stop Bot для Тинькоф инвестиций
