@@ -30,7 +30,6 @@ func main() {
 		rest()
 		time.Sleep(10 * time.Second)
 	}
-
 }
 
 func cleanState() {
@@ -66,7 +65,6 @@ func updateState(ticker string, sl float64, strategy string) {
 	if errtg != nil {
 		log.Fatalln(errtg)
 	}
-
 }
 
 func closePosition(figi string, ticker string, lots int, strategy string) {
