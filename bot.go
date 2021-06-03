@@ -18,9 +18,8 @@ import (
 var token = flag.String("token", "", "prod")
 var tgToken = ""
 var production = false
-var dayTrader = true
-var slPerc = 0.5
-var slCurrent float64 = 0.0
+var dayTrader = false
+var slPerc = 1.0
 var hours, minutes, _ = time.Now().Clock()
 
 func main() {
@@ -37,57 +36,91 @@ func cleanState() {
 	os.MkdirAll("./state/", 0700)
 }
 
-func rmState(ticker string, strategy string) {
-	err := os.Remove("./state/" + ticker + "." + strategy)
+func getPrice(figi string) float64 {
+	client := sdk.NewRestClient(*token)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ob, err := client.Orderbook(ctx, 1, figi)
 	if err != nil {
 		log.Fatalln(err)
 	}
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	return ob.LastPrice
 }
 
-func checkState(ticker string, sl float64, strategy string) {
+func checkState(ticker, strategy string, sl float64, lots int) float64 {
 	if _, err := os.Stat("./state/" + ticker + "." + strategy); os.IsNotExist(err) {
 		file, _ := json.MarshalIndent(sl, "", "")
 		_ = ioutil.WriteFile("./state/"+ticker+"."+strategy, file, 0644)
 
-		msg := fmt.Sprintf("Set SL order for %s to %s", ticker, strconv.FormatFloat(sl, 'f', 2, 64))
+		file, err := ioutil.ReadFile("./state/" + ticker + "." + strategy)
+		_ = json.Unmarshal([]byte(file), &sl)
+		if err != nil {
+			log.Fatalln(err)
+		}
+
+		fmt.Sprintf("Set stop-loss order for %d lots of %s to %s", lots, ticker, strconv.FormatFloat(sl, 'f', 2, 64))
+		msg := fmt.Sprintf("Set stop-loss order for %d lots of %s to %s", lots, ticker, strconv.FormatFloat(sl, 'f', 2, 64))
 		_, errtg := tg(msg)
 		if errtg != nil {
 			log.Fatalln(errtg)
 		}
+	} else {
+		file, err := ioutil.ReadFile("./state/" + ticker + "." + strategy)
+		_ = json.Unmarshal([]byte(file), &sl)
+		if err != nil {
+			log.Fatalln(err)
+		}
 	}
+
+	return sl
 }
 
-func updateState(ticker string, sl float64, strategy string) {
+func updateState(ticker, strategy string, sl float64, lots int) {
 	file, _ := json.MarshalIndent(sl, "", "")
 	_ = ioutil.WriteFile("./state/"+ticker+"."+strategy, file, 0644)
-	msg := fmt.Sprintf("Move SL order for %s to %s", ticker, strconv.FormatFloat(sl, 'f', 2, 64))
+
+	fmt.Sprintf("Update stop-loss order for %d lots of %s to %s", lots, ticker, strconv.FormatFloat(sl, 'f', 2, 64))
+	msg := fmt.Sprintf("Update stop-loss order for %d lots of %s to %s", lots, ticker, strconv.FormatFloat(sl, 'f', 2, 64))
 	_, errtg := tg(msg)
 	if errtg != nil {
 		log.Fatalln(errtg)
 	}
 }
 
-func closePosition(figi string, ticker string, lots int, strategy string) {
-	client := sdk.NewSandboxRestClient(*token)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if strategy == "long" {
-		_, err := client.MarketOrder(ctx, sdk.DefaultAccount, figi, lots, sdk.SELL)
-		if err != nil {
-			log.Fatalln(err)
-		}
-		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+func closePosition(figi, ticker, strategy string, lots int) {
+	if production == true {
+		client := sdk.NewRestClient(*token)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-	} else if strategy == "short" {
-		_, err := client.MarketOrder(ctx, sdk.DefaultAccount, figi, lots*-1, sdk.BUY)
-		if err != nil {
-			log.Fatalln(err)
+		if strategy == "long" {
+			_, err := client.MarketOrder(ctx, sdk.DefaultAccount, figi, lots, sdk.SELL)
+			if err != nil {
+				log.Fatalln(err)
+			}
+			ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+		} else if strategy == "short" {
+			_, err := client.MarketOrder(ctx, sdk.DefaultAccount, figi, lots*-1, sdk.BUY)
+			if err != nil {
+				log.Fatalln(err)
+			}
+			ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
 		}
-		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
 	}
+
+	err := os.Remove("./state/" + ticker + "." + strategy)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	fmt.Sprintf("Close position for %s lots of %s", strconv.Itoa(lots), ticker)
 	msg := fmt.Sprintf("Close position for %s lots of %s", strconv.Itoa(lots), ticker)
 	_, errtg := tg(msg)
 	if errtg != nil {
@@ -129,18 +162,11 @@ func rest() {
 			(p[i].AveragePositionPrice.Currency == "USD" && hours == 04 && minutes == 30) {
 			if p[i].Lots > 0 && p[i].Ticker != string("USD000UTSTOM") {
 				strategy := "long"
-				if production == true {
-					closePosition(p[i].FIGI, p[i].Ticker, p[i].Lots, strategy)
-					rmState(p[i].Ticker, strategy)
-				}
+				closePosition(p[i].FIGI, p[i].Ticker, strategy, p[i].Lots)
 
 			} else if p[i].Lots < 0 && p[i].Ticker != string("USD000UTSTOM") {
 				strategy := "short"
-				if production == true {
-					closePosition(p[i].FIGI, p[i].Ticker, p[i].Lots, strategy)
-					rmState(p[i].Ticker, strategy)
-				}
-
+				closePosition(p[i].FIGI, p[i].Ticker, strategy, p[i].Lots)
 			}
 		}
 	}
@@ -149,68 +175,35 @@ func rest() {
 		// long
 		if p[i].Lots > 0 && p[i].Ticker != string("USD000UTSTOM") {
 			strategy := "long"
+			lastPrice := getPrice(p[i].FIGI)
+			slCalculated := lastPrice - lastPrice/100*slPerc
+			slCurrent := checkState(p[i].Ticker, strategy, slCalculated, p[i].Lots)
+			log.Println(slCurrent)
 
-			ob, err := client.Orderbook(ctx, 1, p[i].FIGI)
-			if err != nil {
-				log.Fatalln(err)
-			}
-			ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			slCalculated := ob.LastPrice - ob.LastPrice/100*slPerc
-			checkState(p[i].Ticker, slCalculated, strategy)
-
-			file, err := ioutil.ReadFile("./state/" + p[i].Ticker + "." + strategy)
-			_ = json.Unmarshal([]byte(file), &slCurrent)
-			if err != nil {
-				log.Fatalln(err)
-			}
-
-			if slCurrent < slCalculated {
+			if slCurrent < lastPrice {
 				if slCurrent < slCalculated {
-					log.Println("slcur", slCalculated)
-					updateState(p[i].Ticker, slCalculated, strategy)
+					updateState(p[i].Ticker, strategy, slCalculated, p[i].Lots)
 				}
 
 			} else {
-				if production == true {
-					closePosition(p[i].FIGI, p[i].Ticker, p[i].Lots, strategy)
-					rmState(p[i].Ticker, strategy)
-				}
+				closePosition(p[i].FIGI, p[i].Ticker, strategy, p[i].Lots)
 			}
 
 		} else {
 			// short
 			if p[i].Lots < 0 && p[i].Ticker != string("USD000UTSTOM") {
 				strategy := "short"
+				lastPrice := getPrice(p[i].FIGI)
+				slCalculated := lastPrice + lastPrice/100*slPerc
+				slCurrent := checkState(p[i].Ticker, strategy, slCalculated, p[i].Lots)
 
-				ob, err := client.Orderbook(ctx, 1, p[i].FIGI)
-				if err != nil {
-					log.Fatalln(err)
-				}
-				ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-
-				slCalculated := ob.LastPrice + ob.LastPrice/100*slPerc
-				checkState(p[i].Ticker, slCalculated, strategy)
-
-				file, _ := ioutil.ReadFile("./state/" + p[i].Ticker + "." + strategy)
-				_ = json.Unmarshal([]byte(file), &slCurrent)
-				if err != nil {
-					log.Fatalln(err)
-				}
-
-				if slCurrent > ob.LastPrice {
+				if slCurrent > lastPrice {
 					if slCurrent > slCalculated {
-						log.Println("slcur", slCalculated)
-						updateState(p[i].Ticker, slCalculated, strategy)
+						updateState(p[i].Ticker, strategy, slCalculated, p[i].Lots)
 					}
 
 				} else {
-					if production == true {
-						closePosition(p[i].FIGI, p[i].Ticker, p[i].Lots, strategy)
-						rmState(p[i].Ticker, strategy)
-					}
+					closePosition(p[i].FIGI, p[i].Ticker, strategy, p[i].Lots)
 				}
 			}
 		}
