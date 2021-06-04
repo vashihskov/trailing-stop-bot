@@ -19,22 +19,35 @@ var token = flag.String("token", "", "prod")
 var tgToken = ""
 var production = false
 var dayTrader = false
-var slPerc = 1.0
+var slPerc = 0.5
 var hours, minutes, _ = time.Now().Clock()
-var excludePositions = []string{"USD000UTSTOM", "EUR"}
+var excludePositions = []string{"USD000UTSTOM", "SPCE"}
+var obChannel = make(chan interface{})
 
 func main() {
-
 	cleanState()
 	for {
-		rest()
-		time.Sleep(10 * time.Second)
+		stopLoss()
+		time.Sleep(5 * time.Second)
 	}
 }
 
 func cleanState() {
 	os.RemoveAll("./state/")
 	os.MkdirAll("./state/", 0700)
+}
+
+func getPositions() []sdk.PositionBalance {
+	client := sdk.NewRestClient(*token)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p, err := client.PositionsPortfolio(ctx, sdk.DefaultAccount) //positions
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	return p
 }
 
 func positionExclude(ticker string) bool {
@@ -152,15 +165,9 @@ func tg(msg string) (string, error) {
 	return "OK", nil
 }
 
-func rest() {
-	client := sdk.NewRestClient(*token)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+func stopLoss() {
 
-	p, err := client.PositionsPortfolio(ctx, sdk.DefaultAccount) //positions
-	if err != nil {
-		log.Fatalln(err)
-	}
+	p := getPositions()
 
 	for i := range p { // close positions on end of the day
 
@@ -185,7 +192,6 @@ func rest() {
 			lastPrice := getPrice(p[i].FIGI)
 			slCalculated := lastPrice - lastPrice/100*slPerc
 			slCurrent := checkState(p[i].Ticker, strategy, slCalculated, p[i].Lots)
-			log.Println(slCurrent)
 
 			if slCurrent < lastPrice {
 				if slCurrent < slCalculated {
